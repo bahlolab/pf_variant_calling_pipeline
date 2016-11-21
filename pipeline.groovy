@@ -23,7 +23,7 @@ load 'pipeline_stages_config.groovy'
 
 
 run {  
-    "%.bam" * [   makeUBAM  +
+    "%_*_R*.fastq.gz" * [   makeUBAM  +
                   fastqc_unmapped +   
                   markAdapters +
                   remapBWA + 
@@ -35,10 +35,10 @@ run {
                   bqsrApply + 
                   bqsrCheck + 
                   fastqc_mapped + 
-                  flagstat +
                   alignment_metrics +
                   insert_metrics + 
-                  depthOfCoverage +
+                  genomecoverage +
+                  perbasecoveragepf +
                   callVariants ] + 
     // after each BAM processed jointly genotype then call biallelic variants
     [
@@ -52,8 +52,7 @@ run {
                   filterSNPs +
                   cleanVCF +
                   extractAnno + 
-                  indexVCF +
-                  cleanGDS 
+                  indexVCF
 
      ] 
 }

@@ -28,31 +28,22 @@ createDictionary = {
     }
 }
 
-// this could probably be broken up into multiple steps i.e. extract, align, merge 
-// but I'm still learning bpipe intricacies
-// a bit hacky at the moment but for now it'll do.
-@filter("reverted")
 makeUBAM = {
-    doc "Create uBAM from input BAM file using revert sam. Note we clean bam (revert mapQ=0 for unmapped reads) file before reverting."
-    branch.sample = branch.name
-    output.dir="$REFBASE/ubam"
-    uses(GB:8) {
-        exec """
-            $PICARD_HOME/RevertSam \
-                I=$input.bam \
-                O=$output.bam \
-                SANITIZE=true \
-                MAX_DISCARD_FRACTION=0.005 \
-                ATTRIBUTE_TO_CLEAR=XT \
-                ATTRIBUTE_TO_CLEAR=XN \
-                ATTRIBUTE_TO_CLEAR=AS \
-                ATTRIBUTE_TO_CLEAR=OC \
-                ATTRIBUTE_TO_CLEAR=OP \
+    doc "Create uBAM from input fastq file using revert sam. Note we clean bam (revert mapQ=0 for unmapped reads) file before reverting."
+    output.dir="$REFBASE/bam"
+    branch.sample="$branch.name"
+    produce("$sample" + ".raw.bam") {
+        exec """            
+            $PICARD_HOME/FastqToSam \
+                F1=$input1.gz \
+                F2=$input2.gz \
+                O=$output \
+                SM=$sample \
+                RG=$sample \
+                PU=\$(zcat $input1.gz | head -n1 | cut -d":" -f3,6,7 | sed 's/:/./g' | sed 's/\\s1//g') \
+                PLATFORM=ILLUMINA \
+                SEQUENCING_CENTER=WEHI \
                 SORT_ORDER=queryname \
-                RESTORE_ORIGINAL_QUALITIES=true \
-                REMOVE_DUPLICATE_INFORMATION=true \
-                REMOVE_ALIGNMENT_INFORMATION=true \
-                VALIDATION_STRINGENCY=SILENT \
                 TMP_DIR=$TMPDIR 
         """
     }
@@ -87,15 +78,14 @@ markAdapters = {
 @preserve
 remapBWA = {
     doc "Create merged BAM alignment from unmapped BAM file"
-    output.dir="$REFBASE/aligned_bams"
-    indexes="$REFBASE/fasta/Pfalciparum.genome"
-    def ubam="$REFBASE/ubam/"+"$sample"+".reverted.bam"
-    uses(threads:8,GB:16) {
+    output.dir="$REFBASE/bam"
+    def ubam="$REFBASE/bam/"+"$sample"+".raw.bam"
+    uses(threads:4,GB:16) {
     exec """
         $PICARD_HOME/SamToFastq I=$input.bam FASTQ=/dev/stdout \
             CLIPPING_ATTRIBUTE=XT CLIPPING_ACTION=2 INTERLEAVE=true NON_PF=true \
             TMP_DIR=$TMPDIR | \
-        bwa mem -M -t 8 -p $indexes /dev/stdin | \
+        bwa mem -M -t 4 -p $INDEXES /dev/stdin | \
         $PICARD_HOME/MergeBamAlignment \
             ALIGNED_BAM=/dev/stdin \
             UNMAPPED_BAM=$ubam\
@@ -114,7 +104,7 @@ remapBWA = {
 
 @transform(".intervals")
 realignIntervals = {
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     exec """
         java -Xmx4g -jar $GATK/GenomeAnalysisTK.jar 
           -T RealignerTargetCreator
@@ -127,7 +117,7 @@ realignIntervals = {
 
 @filter("realignindels")
 realignIndels = {
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     exec """
         java -Xmx8g -jar $GATK/GenomeAnalysisTK.jar 
           -T IndelRealigner 
@@ -142,7 +132,7 @@ realignIndels = {
 @filter("dedup")
 dedup = {
     doc "Mark Duplicates with PicardTools"
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     def metrics="$REFBASE/qc/" + "$sample" +".dup.metrics.txt" 
     exec """
         $PICARD_HOME/MarkDuplicates
@@ -158,7 +148,7 @@ dedup = {
 
 bqsrPass1 = {
     doc "Recalibrate base qualities in a BAM file so that quality metrics match actual observed error rates"
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     exec """
             java -Xmx6g -jar $GATK/GenomeAnalysisTK.jar
                 -T BaseRecalibrator 
@@ -175,7 +165,7 @@ bqsrPass1 = {
 
 bqsrPass2 = {
     doc "Recalibrate base qualities in a BAM file so that quality metrics match actual observed error rates"
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     exec """
             java -Xmx6g -jar $GATK/GenomeAnalysisTK.jar 
                 -T BaseRecalibrator 
@@ -192,7 +182,7 @@ bqsrPass2 = {
 @preserve
 bqsrApply = {
     doc "Apply BQSR to input BAM file."
-    output.dir="$REFBASE/aligned_bams"
+    output.dir="$REFBASE/bam"
     exec """
         java -Xmx4g -jar $GATK/GenomeAnalysisTK.jar  
             -T PrintReads  
@@ -231,54 +221,51 @@ fastqc_mapped = {
 @transform(".alignment_metrics")
 alignment_metrics = {
     doc "Collect alignment summary statistics"
-    output.dir="$REFBASE/qc"
-
-    exec """ 
-        $PICARD_HOME/CollectAlignmentSummaryMetrics \
-            R=$REF \
-            I=$input.bam \
-            O=$output.alignment_metrics
-    """
+    output.dir="qc"
+    produce("$sample" + ".alignment_metrics") {
+        exec """ 
+            $PICARD_HOME/CollectAlignmentSummaryMetrics \
+                R=$REF \
+                I=$input.bam \
+                O=$output
+        """
+    }
 }
 
 @transform(".insert_metrics")
 insert_metrics = {
     doc "Collect insert size metrics"
-    output.dir="$REFBASE/qc"
+    output.dir="qc"
     def histogram="$output.dir" + "/" + "$sample" + "is_distribution.pdf"
-    exec """
-        $PICARD_HOME/CollectInsertSizeMetrics \
-            I=$input.bam \
-            O=$output.insert_metrics \
-            H=$histogram 
-    """
+    produce("$sample" + ".insert_metrics") {
+        exec """
+            $PICARD_HOME/CollectInsertSizeMetrics \
+                I=$input.bam \
+                O=$output.insert_metrics \
+                H=$histogram 
+        """
+    }
 
 }
 
-flagstat = {
-    output.dir = "$REFBASE/qc"
-    transform('.bam') to('.flagstat') {
-        exec "samtools flagstat $input.bam > $output.flagstat"
+// Depth of Coverage Metrics
+genomecoverage = {
+    output.dir = "qc"
+    produce("$sample" + ".bw") {
+        exec "bamCoverage -b $input.bam --minMappingQuality 30 --samFlagInclude 64 -o $output"
+    }
+} 
+
+perbasecoveragepf = {
+    output.dir = "qc"
+    produce("$sample" + ".pf_coverage") {
+            exec """
+                bedtools coverage -abam $input.bam -b data/fasta/pf.contigs.sorted.bed -hist > $output
+            """
     }
 }
 
-
-
-depthOfCoverage = {
-    output.dir="$REFBASE/qc"
-    transform("bam") to("sample_statistics", "sample_summary") {
-        exec """
-            java -Xmx4g -jar $GATK/GenomeAnalysisTK.jar 
-              -T DepthOfCoverage 
-              -R $REF -I $input.bam 
-              -omitBaseOutput 
-              -ct 1 -ct 5 -ct 10
-              -mmq 20 -mbq 20
-              -L $RESISTANCE_LOCI
-              -o $output.prefix
-        """ 
-    }    
-}
+// Variant calling
 callVariants = {
     doc "Call SNPs/SNVs using GATK Haplotype Caller, produces .g.vcf"
     output.dir="$REFBASE/variants"
@@ -391,6 +378,7 @@ barcode = {
 
     """ 
 }
+
 // select only biallelic SNPs
 keepSNPs= {
     doc "Kepp only SNPs in VCF file"
@@ -417,8 +405,6 @@ filterSNPs = {
         java -Xmx4g -jar $GATK/GenomeAnalysisTK.jar 
             -T VariantFiltration 
             -R $REF
-            --clusterSize 3 
-            --clusterWindowSize 30
             --filterName LowQualVQ -filter "VQSLOD <= 0.0"
             --filterName NotCore -filter  "RegionType != 'Core'"
             --variant $input.vcf
@@ -445,23 +431,6 @@ cleanVCF = {
 }
 
 
-
-indexVCF = {
-    exec "./vcftools_prepare.sh $input.vcf"
-}
-
-
-cleanGDS = {
-    doc "Use clean VCF to construct GDS file"
-    output.dir="cache"
-    def vcf="$input.vcf"+".gz"
-    R {"""
-        library("SeqArray");
-        seqVCF2GDS("$vcf", "$output.gds")
-    """
-    }
-}
-
 extractAnno = {
     doc "Use snpSift to extract annotations as plain text file"
     output.dir="cache"
@@ -475,5 +444,8 @@ extractAnno = {
     }
 }
 
+indexVCF = {
+    exec "./vcftools_prepare.sh $input.vcf"
+}
 
 

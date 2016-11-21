@@ -12,7 +12,7 @@ calling variants from WGS data in humans.
 ## Overview
 
 The Malaria Gen pipeline follows the GATK best practices guideline and takes
-as input BAM files. 
+as paired FASTQ files. 
 
 It extracts the fastq files by read-group and marks adapter sequences. Following
 the reads for each sample are mapped using bwa mem -M and remerged into one BAM file.
@@ -69,7 +69,7 @@ To use the pipeline first install bpipe (version 0.9.8.5 or later)
 and then simply enter 
 
 ```{bash}
-bpipe run -n 4 pipeline.groovy *.bam
+bpipe run -n 4 pipeline.groovy sample_01_R1.fq.gz sample_02_R2.fq.gz
 ```
 to run the the pipeline concurrently using four cores. We have
 also found that for some computationally intensive steps it's worth
@@ -80,8 +80,6 @@ MAX_JAVA_MEM=4g bpipe run -n 4 pipeline.groovy *.bam
 ```
 
 # Appendix
-Where were the genomes downloaded from?
-PReichenowi - http://plasmodb.org/common/downloads/Current_Release/PreichenowiCDC/fasta/data/PlasmoDB-28_PreichenowiCDC_Genome.fasta
 
 All the genetic crosses, fasta and gff files for this pipeline were obtained from
 Malaria Gen Pf3k v5 pilot data.
